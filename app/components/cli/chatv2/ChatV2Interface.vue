@@ -645,6 +645,7 @@ async function handleClaudeCodeSessionSelected(payload: { projectName: string; s
   urlProjectName.value = payload.projectName
   urlSessionId.value = payload.sessionId
   setCurrentSessionId(payload.sessionId) // Sync active session
+  sessionStore.setActiveSession(payload.sessionId) // Sync store so bubbles attach to history session
   currentSessionSummary.value = payload.sessionSummary
   currentProjectDisplayName.value = payload.projectDisplayName
   isContinuingHistory.value = false  // Reset when selecting a new history session
@@ -1120,7 +1121,7 @@ async function executeSlashCommand(rawInput: string): Promise<boolean> {
         context: {
           projectPath: localWorkingDir.value,
           model: selectedModel.value,
-          sessionId: currentSessionId.value,
+          sessionId: currentSessionId.value || urlSessionId.value || undefined,
         },
       },
     })
@@ -1181,11 +1182,17 @@ function handleBuiltInCommandResult(result: any) {
 }
 
 /**
- * Add a local user message to the current session
+ * Add a local user message to the current session.
+ *
+ * Prefers an existing real session id, then the URL session id (when the
+ * user is viewing a history session), and only falls back to a local
+ * placeholder when neither is available. This keeps bubbles attached to
+ * the right session so they don't disappear when the SDK returns a real
+ * session id mid-chat.
  */
 function addLocalUserMessage(content: string) {
-  const sid = currentSessionId.value || `local-${Date.now()}`
-  if (!currentSessionId.value) {
+  const sid = currentSessionId.value || urlSessionId.value || `local-${Date.now()}`
+  if (!currentSessionId.value && !urlSessionId.value) {
     setCurrentSessionId(sid)
   }
   sessionStore.appendRealtime(sid, {
@@ -1199,11 +1206,12 @@ function addLocalUserMessage(content: string) {
 }
 
 /**
- * Add a local assistant message to the current session
+ * Add a local assistant message to the current session.
+ * Same session-resolution rules as addLocalUserMessage.
  */
 function addLocalAssistantMessage(content: string) {
-  const sid = currentSessionId.value || `local-${Date.now()}`
-  if (!currentSessionId.value) {
+  const sid = currentSessionId.value || urlSessionId.value || `local-${Date.now()}`
+  if (!currentSessionId.value && !urlSessionId.value) {
     setCurrentSessionId(sid)
   }
   sessionStore.appendRealtime(sid, {
