@@ -153,6 +153,8 @@ export default defineEventHandler(async (event) => {
         allowDangerouslySkipPermissions: true,
         maxTurns: 10,
         includePartialMessages: true,
+        // Load settings from ~/.claude/, <cwd>/.claude/, and <cwd>/.claude/settings.local.json
+        settingSources: ['user', 'project', 'local'],
         systemPrompt: {
           type: 'preset',
           preset: systemPreset,

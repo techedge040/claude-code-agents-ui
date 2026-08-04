@@ -142,6 +142,8 @@ export const claudeProvider: ProviderAdapter = {
         allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
         maxTurns: 10,
         includePartialMessages: true,
+        // Load settings from ~/.claude/, <cwd>/.claude/, and <cwd>/.claude/settings.local.json
+        settingSources: ['user', 'project', 'local'],
       }
 
       // Add system prompt configuration
