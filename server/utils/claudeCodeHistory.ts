@@ -592,6 +592,61 @@ export async function getClaudeCodeSessions(
 }
 
 /**
+ * Strip ANSI escape sequences from text.
+ */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\[[0-9;]*[a-zA-Z]/g, '')
+}
+
+/**
+ * Extract the full provider-prefixed model name from a /model command message.
+ * Returns undefined if no valid model command is found.
+ */
+function extractFullModelName(content: string, role?: string): string | undefined {
+  // Skip synthetic placeholders
+  if (content.includes('<synthetic>')) return undefined
+
+  // Never treat assistant outputs as command sources; they often discuss /model
+  // as an example and contain placeholders like <name> or fragments like "command".
+  const isAssistant = role === 'assistant' || role === 'ai' || role === 'local-assistant'
+  if (isAssistant) return undefined
+
+  const cleanContent = stripAnsi(content)
+
+  // Only user/command-like messages can carry an actual /model command.
+  const isUserLike = !role || role === 'user' || role === 'human' || role === 'command'
+
+  // XML command form: <command-name>/model</command-name>...<command-args>MODEL</command-args>
+  if (isUserLike) {
+    const xmlMatch = cleanContent.match(/<command-name>\s*\/model\s*<\/command-name>[\s\S]*?<command-args>\s*([^<\s][^<]*)\s*<\/command-args>/i)
+    if (xmlMatch) {
+      const model = xmlMatch[1].trim()
+      if (model && model !== '<synthetic>') return model
+    }
+  }
+
+  // Plain text form: /model MODEL must start at the beginning of the message
+  // or at the beginning of a line so we do not capture "discuss /model command".
+  if (isUserLike) {
+    const plainMatch = cleanContent.match(/(?:^|\n)\/model\s+(\S+)/)
+    if (plainMatch) {
+      const model = plainMatch[1].trim()
+      if (model && model !== '<synthetic>') return model
+    }
+  }
+
+  // Stdout confirmation: Set model to MODEL
+  const confirmMatch = cleanContent.match(/Set model to\s+([^\s]+)/i)
+  if (confirmMatch) {
+    const model = confirmMatch[1].trim()
+    if (model && model !== '<synthetic>') return model
+  }
+
+  return undefined
+}
+
+/**
  * Get messages for a specific session
  */
 export async function getClaudeCodeSessionMessages(
@@ -651,22 +706,33 @@ export async function getClaudeCodeSessionMessages(
       new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
     )
 
-    // Extract latest token usage and model from messages (scan from end)
+    // Extract latest token usage and full model from messages (scan from end)
     let tokenUsage: any = undefined
     let model: string | undefined = undefined
-    
+
     for (let i = sortedMessages.length - 1; i >= 0; i--) {
       const msg = sortedMessages[i]
-      
-      // Extract model if present anywhere in session
-      if ((msg as any).model && !model) {
-        model = (msg as any).model
+
+      // Extract full model name from the most recent /model command message.
+      // Do NOT fall back to the short message.model value; only the provider-prefixed
+      // name from the /model command is considered valid.
+      if (!model) {
+        const content = typeof msg.message?.content === 'string'
+          ? msg.message.content
+          : Array.isArray(msg.message?.content)
+            ? msg.message.content.map(c => c.text || '').join(' ')
+            : undefined
+
+        if (content) {
+          const role = msg.message?.role || (msg as any).role || msg.type
+          model = extractFullModelName(content, role)
+        }
       }
 
       // Use msg.message.role or entry.role/type depending on JSONL format
       const role = msg.role || (msg.message as any)?.role || msg.type
       const usage = msg.usage || (msg.message as any)?.usage
-      
+
       if (role === 'assistant' && usage && !tokenUsage) {
         tokenUsage = {
           input: usage.input_tokens || 0,
@@ -675,7 +741,7 @@ export async function getClaudeCodeSessionMessages(
           cacheRead: usage.cache_read_input_tokens || 0
         }
       }
-      
+
       // If we have both, we can stop
       if (model && tokenUsage) break
     }

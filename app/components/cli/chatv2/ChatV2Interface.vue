@@ -3,8 +3,8 @@ import { useChatV2Handler } from '~/composables/useChatV2Handler'
 import { useClaudeCodeHistory } from '~/composables/useClaudeCodeHistory'
 import { convertToDisplayMessages } from '~/utils/chatMessageConverter'
 import { convertClaudeCodeMessages } from '~/utils/claudeCodeMessageConverter'
-import type { DisplayChatMessage, PermissionMode } from '~/types'
-import { MODEL_OPTIONS_CHAT, DEFAULT_MODEL } from '~/utils/models'
+import type { DisplayChatMessage, PermissionMode, ProviderInfo } from '~/types'
+import { buildModelOptionsWithDefault, DEFAULT_MODEL, normalizeModelId } from '~/utils/models'
 
 const props = defineProps<{
   executionOptions: {
@@ -169,9 +169,9 @@ onMounted(async () => {
   updateWidth()
   window.addEventListener('resize', updateWidth)
   document.addEventListener('click', handleEffortClickOutside)
-  
-  // Fetch sessions on mount
-  await fetchSessions()
+
+  // Fetch provider info (default model from settings.json) and sessions in parallel
+  await Promise.all([fetchProviderInfo(), fetchSessions()])
 })
 
 onUnmounted(() => {
@@ -313,13 +313,56 @@ const selectedPermissionMode = ref<PermissionMode>('default')
 // Model selector — options and default come from the shared model registry
 const selectedModel = ref<string>(DEFAULT_MODEL)
 
+// Session default model — resolved from server settings.json on mount
+// When the user switches model, the chosen model becomes the new session default.
+const sessionDefaultModel = ref<string>(DEFAULT_MODEL)
+const modelOptions = ref(buildModelOptionsWithDefault(DEFAULT_MODEL))
+
+async function fetchProviderInfo() {
+  try {
+    const info = await $fetch<ProviderInfo>('/api/providers/info')
+    if (info?.defaultModel) {
+      const defaultAlias = normalizeModelId(info.defaultModel)
+      sessionDefaultModel.value = defaultAlias
+      modelOptions.value = buildModelOptionsWithDefault(defaultAlias)
+      // Initialize selection to session default if user hasn't picked anything
+      if (selectedModel.value === DEFAULT_MODEL) {
+        selectedModel.value = defaultAlias
+      }
+    }
+  } catch (e) {
+    console.warn('[ChatV2] Failed to fetch provider info:', e)
+  }
+}
+
+// Rebuild model options whenever selectedModel changes so the currently
+// selected model becomes the "session default" item.
+watch(selectedModel, (newModel) => {
+  if (!newModel) return
+  modelOptions.value = buildModelOptionsWithDefault(newModel)
+})
+
 // Output style selector
 const selectedOutputStyleId = ref<string>('')
 
 // Sync model selection with historical session if available
-watch(() => history.selectedSession.value, (newSession) => {
+watch(() => history.selectedSession.value, async (newSession) => {
+  if (newSession?.id) {
+    // Prefer the per-session model preference from the server
+    try {
+      const res = await $fetch<{ model?: string | null }>(`/api/providers/session-model`, {
+        query: { sessionId: newSession.id },
+      })
+      if (res?.model) {
+        selectedModel.value = normalizeModelId(res.model)
+        return
+      }
+    } catch {
+      // fall through to session-stored model
+    }
+  }
   if (newSession?.model) {
-    selectedModel.value = newSession.model
+    selectedModel.value = normalizeModelId(newSession.model)
   }
 }, { immediate: true, deep: true })
 
@@ -1158,6 +1201,14 @@ function handleBuiltInCommandResult(result: any) {
       addLocalAssistantMessage(data.content)
       break
     case 'model':
+      // The assistant bubble from the server is rendered immediately, so the
+      // user sees the "✓ Switched to: ..." message right in the chat —
+      // no extra toast needed.
+      if (data?.success && data?.current) {
+        selectedModel.value = normalizeModelId(data.current)
+        // Rebuild options so the new model becomes "session default"
+        modelOptions.value = buildModelOptionsWithDefault(normalizeModelId(data.current))
+      }
       addLocalAssistantMessage(data.message)
       break
     case 'cost': {
@@ -1195,6 +1246,18 @@ function addLocalUserMessage(content: string) {
   if (!currentSessionId.value && !urlSessionId.value) {
     setCurrentSessionId(sid)
   }
+
+  // When the user starts interacting with a loaded history session, switch
+  // to continuing mode so that local bubbles (e.g. slash commands) are
+  // merged into the message list immediately.
+  if (
+    viewMode.value === 'history' &&
+    !isContinuingHistory.value &&
+    sid === urlSessionId.value
+  ) {
+    isContinuingHistory.value = true
+  }
+
   sessionStore.appendRealtime(sid, {
     kind: 'text',
     id: `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -1214,6 +1277,17 @@ function addLocalAssistantMessage(content: string) {
   if (!currentSessionId.value && !urlSessionId.value) {
     setCurrentSessionId(sid)
   }
+
+  // Mirror the continuing-history logic from addLocalUserMessage so that
+  // assistant responses to slash commands are rendered immediately.
+  if (
+    viewMode.value === 'history' &&
+    !isContinuingHistory.value &&
+    sid === urlSessionId.value
+  ) {
+    isContinuingHistory.value = true
+  }
+
   sessionStore.appendRealtime(sid, {
     kind: 'text',
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -1775,7 +1849,7 @@ function handleClosePreview() {
           <ChatV2ModelSelector
             v-if="(viewMode === 'history' && urlSessionId) || (viewMode === 'live' && isLiveChat)"
             v-model="selectedModel"
-            :options="MODEL_OPTIONS_CHAT"
+            :options="modelOptions"
             class="shadow-lg border rounded-full bg-overlay backdrop-blur-md"
             style="border-color: var(--border-subtle);"
           />
