@@ -606,3 +606,15 @@ export interface ProviderFetchResult {
   hasMore: boolean
   tokenUsage?: TokenUsage
 }
+
+export interface ProviderInfo {
+  name: string
+  displayName: string
+  description: string
+  models: string[]
+  supportsPermissions: boolean
+  supportsImages: boolean
+  supportsInterrupt: boolean
+  /** Default model identifier resolved from settings.json */
+  defaultModel?: string
+}

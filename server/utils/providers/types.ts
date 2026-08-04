@@ -68,6 +68,19 @@ export interface ProviderAdapter {
    * @returns Agent instructions or null
    */
   loadAgentInstructions?(agentSlug: string): Promise<string | null>
+
+  /**
+   * Set the model preference for a session. The provider applies this to
+   * every subsequent query for the session.
+   * @param sessionId Session ID (real or temporary "new-session-*" id)
+   * @param model New model identifier
+   */
+  setModel?(sessionId: string, model: string): Promise<{ success: boolean; model: string }>
+
+  /**
+   * Read the current model preference for a session, if any.
+   */
+  getSessionModel?(sessionId: string): string | undefined
 }
 
 export interface ProviderQueryOptions {
@@ -94,4 +107,6 @@ export interface ProviderInfo {
   supportsPermissions: boolean
   supportsImages: boolean
   supportsInterrupt: boolean
+  /** Default model identifier (e.g. "claude-sonnet-4") resolved from settings.json */
+  defaultModel?: string
 }

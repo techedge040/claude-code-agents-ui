@@ -106,6 +106,58 @@ export const MODEL_OPTIONS_CHAT: { value: AgentModel; label: string; description
   description: MODEL_META[id].description,
 }))
 
+/**
+ * Shape consumed by ChatV2ModelSelector. `isDefault` flags the
+ * "session default" item so the UI can render a small badge.
+ */
+export interface ModelSelectorOption {
+  value: string
+  label: string
+  description: string
+  isDefault?: boolean
+}
+
+/**
+ * Normalize a model identifier coming from the server.
+ * If it matches a known alias (e.g. "sonnet") return it as-is.
+ * Otherwise return the raw string so custom provider/model names
+ * (e.g. "ocg/minimax-m3") can still be displayed.
+ */
+export function normalizeModelId(model: string | undefined): string {
+  if (!model) return DEFAULT_MODEL
+  // If it already matches a known alias, return as-is
+  if (MODEL_IDS.includes(model as AgentModel)) return model
+  // Unknown/custom model — return the raw string so it can still be displayed
+  return model
+}
+
+/**
+ * Build model selector options for the chat UI.
+ * The first entry is the session default (resolved from settings.json on the
+ * server), and the rest are the curated model list excluding the default.
+ */
+export function buildModelOptionsWithDefault(defaultModel: string | undefined): ModelSelectorOption[] {
+  const defaultAlias = normalizeModelId(defaultModel)
+  const defaultLabel = MODEL_META[defaultAlias as AgentModel]?.label ?? defaultAlias
+  const defaultDescription = MODEL_META[defaultAlias as AgentModel]?.description ?? 'Currently configured as default in this session'
+
+  return [
+    {
+      value: defaultAlias,
+      label: `${defaultLabel} (session default)`,
+      description: defaultDescription,
+      isDefault: true,
+    },
+    ...MODEL_IDS
+      .filter((id) => id !== defaultAlias)
+      .map((id) => ({
+        value: id,
+        label: MODEL_META[id].label,
+        description: MODEL_META[id].description,
+      })),
+  ]
+}
+
 /** Lookup: human-readable tagline for a model */
 export function getModelTagline(model: AgentModel | string | undefined): string {
   if (!model) return MODEL_META[DEFAULT_MODEL].tagline

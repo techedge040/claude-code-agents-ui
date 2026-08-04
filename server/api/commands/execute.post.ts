@@ -3,6 +3,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { parseFrontmatter } from '../../utils/frontmatter'
 import { resolveClaudePath } from '../../utils/claudeDir'
+import { providerRegistry } from '../../utils/providers/registry'
 
 /**
  * Built-in command handlers
@@ -43,16 +44,51 @@ Custom commands are loaded from:
     data: { message: 'Conversation history cleared' },
   }),
 
-  '/model': async (args, context) => ({
-    type: 'builtin',
-    action: 'model',
-    data: {
-      current: context?.model || 'sonnet',
-      message: args.length > 0
-        ? `Switching to model: ${args[0]}`
-        : `Current model: ${context?.model || 'sonnet'}`,
-    },
-  }),
+  '/model': async (args, context) => {
+    const newModel = args[0]
+    const sessionId = context?.sessionId
+    const provider = providerRegistry.getDefault()
+
+    // /model without args → show current preference for the session
+    if (!newModel) {
+      const current = (sessionId && provider.getSessionModel?.(sessionId)) || context?.model || 'sonnet'
+      return {
+        type: 'builtin',
+        action: 'model',
+        data: {
+          current,
+          message: `Current model: ${current}`,
+        },
+      }
+    }
+
+    // /model <name> → set per-session preference (B2: applies to all subsequent
+    // queries for this session)
+    if (provider.setModel) {
+      const { success, model } = await provider.setModel(sessionId || '', newModel)
+      return {
+        type: 'builtin',
+        action: 'model',
+        data: {
+          success,
+          current: model,
+          message: success
+            ? `✓ Switched to: ${model} (applies to next messages in this session)`
+            : `✗ Failed to switch (no session id)`,
+        },
+      }
+    }
+
+    return {
+      type: 'builtin',
+      action: 'model',
+      data: {
+        current: newModel,
+        success: false,
+        message: `Provider does not support setModel`,
+      },
+    }
+  },
 
   '/cost': async (_args, context) => {
     const tokenUsage = context?.tokenUsage || {}

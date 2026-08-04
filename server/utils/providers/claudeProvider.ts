@@ -12,14 +12,15 @@ import { MODEL_ALIAS_KEY } from '../models'
 import { DEFAULT_OUTPUT_STYLES } from '../defaultOutputStyles'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import os from 'node:os'
 
 async function getOutputStyleContent(id: string, projectDir?: string): Promise<{ content: string; keepCodingInstructions: boolean } | null> {
   // 1. Check built-in
   const defaultStyle = DEFAULT_OUTPUT_STYLES.find(s => s.id === id)
   if (defaultStyle) {
-    return { 
-      content: id === 'default' ? '' : defaultStyle.content, 
-      keepCodingInstructions: defaultStyle.keepCodingInstructions 
+    return {
+      content: id === 'default' ? '' : defaultStyle.content,
+      keepCodingInstructions: defaultStyle.keepCodingInstructions
     }
   }
 
@@ -28,8 +29,8 @@ async function getOutputStyleContent(id: string, projectDir?: string): Promise<{
   if (existsSync(globalPath)) {
     const raw = readFileSync(globalPath, 'utf-8')
     const { frontmatter, body } = parseFrontmatter<any>(raw)
-    return { 
-      content: body, 
+    return {
+      content: body,
       keepCodingInstructions: frontmatter['keep-coding-instructions'] === true || frontmatter.keepCodingInstructions === true
     }
   }
@@ -40,14 +41,38 @@ async function getOutputStyleContent(id: string, projectDir?: string): Promise<{
     if (existsSync(projectPath)) {
       const raw = readFileSync(projectPath, 'utf-8')
       const { frontmatter, body } = parseFrontmatter<any>(raw)
-      return { 
-        content: body, 
+      return {
+        content: body,
         keepCodingInstructions: frontmatter['keep-coding-instructions'] === true || frontmatter.keepCodingInstructions === true
       }
     }
   }
 
   return null
+}
+
+/**
+ * Resolve the default model from settings.json files.
+ * Priority: user settings → project settings → built-in fallback.
+ * Returns the model id (e.g. "claude-sonnet-4") or undefined if not configured.
+ */
+function getDefaultModelFromSettings(): string {
+  const candidates = [
+    join(os.homedir(), '.claude', 'settings.json'),
+  ]
+  for (const settingsPath of candidates) {
+    if (existsSync(settingsPath)) {
+      try {
+        const data = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+        if (typeof data.model === 'string' && data.model.trim()) {
+          return data.model.trim()
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+  }
+  return 'claude-sonnet-4'
 }
 
 // Store active query instances for interruption
@@ -58,6 +83,13 @@ interface QueryInstance {
 }
 
 const activeQueries = new Map<string, QueryInstance>()
+
+/**
+ * Per-session model preference, set by /model command or the UI.
+ * Applied to every subsequent query for the session until changed again.
+ * Keyed by session id (real or "new-session-*" temporary).
+ */
+const sessionModelPreferences = new Map<string, string>()
 
 // Store pending permission approvals (Promise resolvers/rejectors keyed by permissionId)
 interface PermissionResolver {
@@ -142,6 +174,8 @@ export const claudeProvider: ProviderAdapter = {
         allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
         maxTurns: 10,
         includePartialMessages: true,
+        // Load settings from ~/.claude/, <cwd>/.claude/, and <cwd>/.claude/settings.local.json
+        settingSources: ['user', 'project', 'local'],
       }
 
       // Add system prompt configuration
@@ -183,9 +217,15 @@ export const claudeProvider: ProviderAdapter = {
         console.log('[ClaudeProvider] Starting new SDK session')
       }
 
-      // Add model if specified
-      if (options.model) {
-        sdkOptions.model = options.model
+      // Resolve model: explicit option > per-session preference > fallback
+      // (B2: model preference persists for the whole session once set)
+      const preferenceSessionId = isRealSessionId ? options.sessionId : undefined
+      const preferenceModel = preferenceSessionId
+        ? sessionModelPreferences.get(preferenceSessionId)
+        : undefined
+      const resolvedModel = options.model || preferenceModel
+      if (resolvedModel) {
+        sdkOptions.model = resolvedModel
       }
 
       // Add effort level (controls thinking depth)
@@ -361,6 +401,37 @@ export const claudeProvider: ProviderAdapter = {
     return false
   },
 
+  /**
+   * Switch the model for a session.
+   *
+   * The SDK's `setModel()` is only available in streaming input mode, which
+   * this provider does not use. Instead we store a per-session preference
+   * that is applied to every subsequent query for the session (B2: persists
+   * for the whole session until changed again).
+   *
+   * If the session is not yet known (no active query), the preference is
+   * still stored and will apply as soon as the next query for that session
+   * starts.
+   */
+  async setModel(sessionId: string, model: string): Promise<{ success: boolean; model: string }> {
+    if (!sessionId) {
+      console.warn('[ClaudeProvider] setModel: missing sessionId')
+      return { success: false, model }
+    }
+    sessionModelPreferences.set(sessionId, model)
+    console.log(`[ClaudeProvider] Model preference set for session ${sessionId}: ${model}`)
+    return { success: true, model }
+  },
+
+  /**
+   * Read the current model preference for a session (used by the UI to
+   * display which model is active in the picker).
+   */
+  getSessionModel(sessionId: string): string | undefined {
+    if (!sessionId) return undefined
+    return sessionModelPreferences.get(sessionId)
+  },
+
   normalizeMessage(raw: any, sessionId: string): NormalizedMessage[] {
     return normalizeSDKMessage(raw, sessionId)
   },
@@ -415,4 +486,5 @@ export const claudeProviderInfo: ProviderInfo = {
   supportsPermissions: true,
   supportsImages: true,
   supportsInterrupt: true,
+  defaultModel: getDefaultModelFromSettings(),
 }
